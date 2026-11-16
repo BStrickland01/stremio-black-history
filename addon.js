@@ -5,7 +5,7 @@ const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w500";
-const STREMIO_PAGE_SIZE = 100; // 5 TMDB pages (20 items each) per Stremio scroll request
+const STREMIO_PAGE_SIZE = 40; // 2 TMDB pages (20 items each) per Stremio scroll request for fast genre switching
 
 const BLACK_PRIMARY_KEYWORDS = [
   "african american",
@@ -26,7 +26,6 @@ const MOVIE_CATEGORY_CONFIG = {
       "black history",
       "civil rights",
       "black panther party",
-      "slavery",
       "harlem",
       "apartheid",
       "african american culture",
@@ -83,12 +82,10 @@ const MOVIE_CATEGORY_CONFIG = {
   "Slavery & Reconstruction": {
     withGenres: "",
     primaryKeywords: [
-      "slavery",
       "underground railroad",
       "abolitionist",
       "slave rebellion",
       "antebellum south",
-      "emancipation",
       "reconstruction era",
       "middle passage",
       "atlantic slave trade"
@@ -99,7 +96,8 @@ const MOVIE_CATEGORY_CONFIG = {
       "Frederick Douglass",
       "12 Years a Slave",
       "Amistad",
-      "Nat Turner"
+      "Nat Turner",
+      "Harriet"
     ]
   },
   "Black Liberation & Activism": {
@@ -110,7 +108,6 @@ const MOVIE_CATEGORY_CONFIG = {
       "anti-apartheid",
       "pan-africanism",
       "black nationalism",
-      "political activist",
       "racial injustice"
     ],
     secondaryKeywords: [],
@@ -221,6 +218,30 @@ const MOVIE_CATEGORY_CONFIG = {
       "Dolemite Is My Name",
       "She Did That"
     ]
+  },
+  "Stand-up comedy": {
+    withGenres: "35", // Comedy (TMDB catalogs stand-up specials as Movies)
+    primaryKeywords: [
+      "stand-up comedy",
+      "stand-up comedian",
+      "comedy special"
+    ],
+    secondaryKeywords: [
+      "african american",
+      "black history",
+      "african american culture",
+      "harlem"
+    ],
+    fallbackQueries: [
+      "Dave Chappelle",
+      "Kevin Hart",
+      "Katt Williams",
+      "Chris Rock",
+      "Def Comedy Jam",
+      "Wanda Sykes",
+      "Eddie Murphy",
+      "Bernie Mac"
+    ]
   }
 };
 
@@ -232,7 +253,6 @@ const SERIES_CATEGORY_CONFIG = {
       "black history",
       "civil rights",
       "hip hop",
-      "slavery",
       "african american culture"
     ],
     secondaryKeywords: [],
@@ -248,7 +268,6 @@ const SERIES_CATEGORY_CONFIG = {
     primaryKeywords: [
       "african american",
       "black history",
-      "slavery",
       "underground railroad",
       "civil rights movement",
       "harlem"
@@ -403,7 +422,6 @@ const SERIES_CATEGORY_CONFIG = {
     primaryKeywords: [
       "african american",
       "black history",
-      "slavery",
       "civil war",
       "reconstruction era",
       "african american protagonist"
@@ -446,29 +464,6 @@ const SERIES_CATEGORY_CONFIG = {
       "The Changeling",
       "Kindred",
       "Intergalactic"
-    ]
-  },
-  "Stand-up comedy": {
-    withGenres: "35", // Comedy
-    primaryKeywords: [
-      "stand-up comedy",
-      "stand-up comedian",
-      "comedy special"
-    ],
-    secondaryKeywords: [
-      "african american",
-      "black history",
-      "african american culture",
-      "harlem"
-    ],
-    fallbackQueries: [
-      "Dave Chappelle",
-      "Kevin Hart",
-      "Katt Williams",
-      "Chris Rock",
-      "Def Comedy Jam",
-      "Wanda Sykes",
-      "Eddie Murphy"
     ]
   },
   "Crime": {
@@ -540,11 +535,11 @@ const SERIES_GENRES = Object.keys(SERIES_CATEGORY_CONFIG);
 // --- 2. ADDON MANIFEST ---
 const manifest = {
   id: "community.blackhistory.cinema.v4",
-  version: "4.1.0",
+  version: "4.2.0",
   name: "Black History Cinema & Docs",
   description:
-    "Dynamic Black History movies, documentaries, business stories, and TV shows powered by TMDB.",
-  resources: ["catalog"], // Returns standard tt... IMDb IDs so Stremio matches installed stream add-ons natively
+    "Dynamic Black History movies, documentaries, business stories, stand-up, and TV shows powered by TMDB.",
+  resources: ["catalog"],
   types: ["movie", "series"],
   catalogs: [
     {
@@ -582,6 +577,7 @@ const stats = {
   startedAt: new Date().toISOString(),
   tmdbKeyConfigured: Boolean(TMDB_API_KEY),
   requestsServed: 0,
+  recentRequests: [],
   lastErrors: []
 };
 
@@ -651,32 +647,38 @@ async function resolveImdbId(tmdbType, tmdbId) {
   return imdbId;
 }
 
-// Converts raw TMDB items into Stremio Meta Previews with verified posters & IMDb IDs
+// Batched hydration (15 requests at a time) to prevent TMDB rate-limiting & Stremio timeouts
 async function hydrateTmdbResults(rawItems, stremioType, genreLabel) {
   const tmdbType = stremioType === "series" ? "tv" : "movie";
   const validItems = rawItems.filter((item) => item && item.id && item.poster_path);
+  const metas = [];
+  const BATCH_SIZE = 15;
 
-  const metas = await Promise.all(
-    validItems.map(async (item) => {
-      const imdbId = await resolveImdbId(tmdbType, item.id);
-      if (!imdbId) return null;
+  for (let i = 0; i < validItems.length; i += BATCH_SIZE) {
+    const batch = validItems.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        const imdbId = await resolveImdbId(tmdbType, item.id);
+        if (!imdbId) return null;
 
-      const title = item.title || item.name || "Untitled";
-      const dateStr = item.release_date || item.first_air_date || "";
-      const year = dateStr ? dateStr.slice(0, 4) : "";
+        const title = item.title || item.name || "Untitled";
+        const dateStr = item.release_date || item.first_air_date || "";
+        const year = dateStr ? dateStr.slice(0, 4) : "";
 
-      return {
-        id: imdbId,
-        type: stremioType,
-        name: title,
-        poster: `${TMDB_IMG_BASE}${item.poster_path}`,
-        posterShape: "regular",
-        releaseInfo: year,
-        description: item.overview || "",
-        genres: genreLabel ? [genreLabel] : []
-      };
-    })
-  );
+        return {
+          id: imdbId,
+          type: stremioType,
+          name: title,
+          poster: `${TMDB_IMG_BASE}${item.poster_path}`,
+          posterShape: "regular",
+          releaseInfo: year,
+          description: item.overview || "",
+          genres: genreLabel ? [genreLabel] : []
+        };
+      })
+    );
+    metas.push(...batchResults);
+  }
 
   const deduped = new Map();
   for (const m of metas) {
@@ -705,9 +707,9 @@ async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
             "african american",
             "black history",
             "civil rights movement",
-            "slavery",
             "harlem renaissance",
-            "black panther party"
+            "black panther party",
+            "african american culture"
           ],
           secondaryKeywords: [],
           fallbackQueries: ["Black History", "African American"]
@@ -718,7 +720,6 @@ async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
     ? await resolveKeywordIds(activeConfig.secondaryKeywords)
     : [];
 
-  // Pipe (|) = OR within group; Comma (,) = AND across primary + secondary groups
   let withKeywordsParam = "";
   if (primaryIds.length && secondaryIds.length) {
     withKeywordsParam = `${primaryIds.join("|")},${secondaryIds.join("|")}`;
@@ -726,15 +727,9 @@ async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
     withKeywordsParam = primaryIds.join("|");
   }
 
-  // Map Stremio's skip (0, 100, 200...) directly to 5 consecutive TMDB pages (20 items/page = 100 items)
+  // Map Stremio's skip (0, 40, 80...) to 2 consecutive TMDB pages (20 items/page = 40 items)
   const startTmdbPage = Math.floor(skip / 20) + 1;
-  const pageNumbers = [
-    startTmdbPage,
-    startTmdbPage + 1,
-    startTmdbPage + 2,
-    startTmdbPage + 3,
-    startTmdbPage + 4
-  ];
+  const pageNumbers = [startTmdbPage, startTmdbPage + 1];
 
   const discoverResponses = await Promise.all(
     pageNumbers.map((page) =>
@@ -757,12 +752,14 @@ async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
         tmdbFetch(`/search/${tmdbType}`, { query: q, include_adult: "false", page: 1 })
       )
     );
-    const fallbackItems = fallbackResponses.flatMap((res) => (res?.results || []).slice(0, 6));
+    const fallbackItems = fallbackResponses.flatMap((res) => (res?.results || []).slice(0, 5));
     rawResults = [...rawResults, ...fallbackItems];
   }
 
   const metas = await hydrateTmdbResults(rawResults, stremioType, genreName);
-  pageCache.set(cacheKey, { metas, timestamp: Date.now() });
+  if (metas.length > 0) {
+    pageCache.set(cacheKey, { metas, timestamp: Date.now() });
+  }
   return metas;
 }
 
@@ -773,6 +770,14 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   }
 
   stats.requestsServed++;
+  stats.recentRequests.unshift({
+    time: new Date().toISOString(),
+    type,
+    id,
+    extra: extra || {}
+  });
+  if (stats.recentRequests.length > 10) stats.recentRequests.pop();
+
   const skip = parseInt(extra?.skip || 0, 10);
   const genre = extra?.genre || null;
 
@@ -796,7 +801,6 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 const app = express();
 const PORT = process.env.PORT || 7000;
 
-// Diagnostic endpoint: https://stremio-black-history.onrender.com/status
 app.get("/status", (req, res) => {
   res.json({
     status: "ok",
@@ -809,7 +813,6 @@ app.get("/status", (req, res) => {
   });
 });
 
-// Mount Stremio Addon SDK router (/manifest.json, /catalog/..., CORS, landing page)
 app.use(getRouter(builder.getInterface()));
 
 app.listen(PORT, () => {
