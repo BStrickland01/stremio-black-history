@@ -1,242 +1,550 @@
 // addon.js
-const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
+const express = require("express");
+const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 
-// --- 1. DYNAMIC IMDB KEYWORD & GENRE RULES PER CATEGORY ---
-// Zero hardcoded movie titles. Each category maps to live IMDb keyword slugs, genres, and search terms.
-const MOVIE_CATEGORY_RULES = {
+const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
+const TMDB_BASE = "https://api.themoviedb.org/3";
+const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w500";
+const STREMIO_PAGE_SIZE = 100; // 5 TMDB pages (20 items each) per Stremio scroll request
+
+const BLACK_PRIMARY_KEYWORDS = [
+  "african american",
+  "black history",
+  "african american culture",
+  "african american protagonist",
+  "harlem",
+  "black family",
+  "african american family"
+];
+
+// --- 1. DYNAMIC CATEGORY DEFINITIONS (TMDB DISCOVER RULES) ---
+const MOVIE_CATEGORY_CONFIG = {
   "Documentaries": {
-    imdbTypes: ["movie", "tvMovie", "video"],
-    genres: ["Documentary"],
-    keywords: [
-      "african-american-history", "black-history", "civil-rights-movement",
-      "african-american", "black-panther-party", "racial-injustice",
-      "harlem-renaissance", "slavery", "jim-crow", "tuskegee-airmen",
-      "apartheid", "african-american-culture", "african-american-music"
+    withGenres: "99", // Documentary
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "civil rights",
+      "black panther party",
+      "slavery",
+      "harlem",
+      "apartheid",
+      "african american culture",
+      "african american music"
     ],
-    searchTerms: [
-      "African American documentary", "Black History documentary", "Civil Rights documentary",
-      "Black Panther documentary", "Harlem documentary", "Slavery documentary",
-      "Malcolm X documentary", "Martin Luther King documentary", "Muhammad Ali documentary",
-      "Jim Crow documentary", "Tuskegee Airmen documentary", "Apartheid documentary",
-      "Motown documentary", "Jazz documentary", "Hip Hop documentary", "Nina Simone documentary",
-      "James Baldwin documentary", "Fred Hampton", "Emmett Till", "Nelson Mandela documentary"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Black History documentary",
+      "African American documentary",
+      "Civil Rights documentary"
     ]
   },
-
   "Biopics & True Stories": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["Biography"],
-    keywords: [
-      "african-american", "african-american-history", "african-american-protagonist",
-      "black-history", "civil-rights-leader", "black-activist", "african-american-musician",
-      "african-american-athlete", "based-on-true-story"
+    withGenres: "36|18", // History OR Drama
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "african american protagonist",
+      "civil rights leader",
+      "african american athlete",
+      "african american musician"
     ],
-    searchTerms: [
-      "Malcolm X", "Martin Luther King", "Harriet Tubman", "Frederick Douglass",
-      "Nelson Mandela", "Muhammad Ali", "Jackie Robinson", "Ray Charles",
-      "Aretha Franklin", "James Brown", "Billie Holiday", "Nina Simone",
-      "Thurgood Marshall", "Bayard Rustin", "Shirley Chisholm", "Fred Hampton",
-      "Emmett Till", "Rosa Parks", "Medgar Evers", "Jesse Owens", "Rubin Carter",
-      "Tuskegee Airmen", "Bob Marley", "Whitney Houston", "Tina Turner",
-      "Dorothy Dandridge", "Bessie Smith", "Ma Rainey", "Solomon Northup",
-      "Nat Turner", "Patrice Lumumba", "Steve Biko", "Jean-Michel Basquiat"
+    secondaryKeywords: ["biography", "based on true story", "biopic"],
+    fallbackQueries: [
+      "Malcolm X",
+      "Harriet Tubman",
+      "Thurgood Marshall",
+      "Shirley Chisholm",
+      "Bayard Rustin"
     ]
   },
-
   "Civil Rights Movement": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["History", "Drama", "Biography", "Documentary"],
-    keywords: [
-      "civil-rights-movement", "civil-rights", "martin-luther-king-jr",
-      "malcolm-x", "racial-segregation", "jim-crow", "montgomery-bus-boycott",
-      "freedom-riders", "march-on-washington", "voting-rights", "desegregation",
-      "naacp", "little-rock-nine", "ku-klux-klan", "racial-discrimination"
+    withGenres: "",
+    primaryKeywords: [
+      "civil rights movement",
+      "civil rights",
+      "martin luther king jr",
+      "racial segregation",
+      "jim crow",
+      "freedom riders",
+      "voting rights",
+      "desegregation",
+      "naacp"
     ],
-    searchTerms: [
-      "Civil Rights Movement", "Selma", "Martin Luther King", "Rosa Parks",
-      "Emmett Till", "Medgar Evers", "Freedom Riders", "March on Washington",
-      "Little Rock Nine", "Thurgood Marshall", "Bayard Rustin", "John Lewis",
-      "Fannie Lou Hamer", "Coretta Scott King", "Malcolm X", "Montgomery Bus Boycott",
-      "Birmingham 1963", "Jim Crow", "Ruby Bridges", "James Meredith",
-      "Loving v Virginia", "Brown v Board", "Mississippi civil rights"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Civil Rights Movement",
+      "Selma",
+      "Emmett Till",
+      "Rosa Parks",
+      "Medgar Evers"
     ]
   },
-
   "Slavery & Reconstruction": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["History", "Drama", "Biography"],
-    keywords: [
-      "slavery", "underground-railroad", "abolitionist", "slave-rebellion",
-      "antebellum-south", "emancipation", "reconstruction-era", "atlantic-slave-trade",
-      "middle-passage", "plantation", "runaway-slave", "freed-slave", "19th-century"
+    withGenres: "",
+    primaryKeywords: [
+      "slavery",
+      "underground railroad",
+      "abolitionist",
+      "slave rebellion",
+      "antebellum south",
+      "emancipation",
+      "reconstruction era",
+      "middle passage",
+      "atlantic slave trade"
     ],
-    searchTerms: [
-      "12 Years a Slave", "Harriet Tubman", "Underground Railroad", "Frederick Douglass",
-      "Amistad", "Nat Turner", "Sojourner Truth", "Solomon Northup",
-      "Emancipation slavery", "54th Massachusetts Glory", "Abolitionist",
-      "Middle Passage", "Reconstruction Era", "Antebellum slavery",
-      "John Brown Harpers Ferry", "Haitian Revolution", "Dred Scott", "Tulsa Race Massacre"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Underground Railroad",
+      "Frederick Douglass",
+      "12 Years a Slave",
+      "Amistad",
+      "Nat Turner"
     ]
   },
-
   "Black Liberation & Activism": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["Drama", "History", "Biography", "Documentary"],
-    keywords: [
-      "black-panther-party", "black-power", "black-liberation", "political-activist",
-      "anti-apartheid", "pan-africanism", "black-nationalism", "police-brutality",
-      "racial-injustice", "civil-unrest", "protest", "revolutionary"
+    withGenres: "",
+    primaryKeywords: [
+      "black panther party",
+      "black power",
+      "anti-apartheid",
+      "pan-africanism",
+      "black nationalism",
+      "political activist",
+      "racial injustice"
     ],
-    searchTerms: [
-      "Black Panther Party", "Fred Hampton", "Huey P. Newton", "Bobby Seale",
-      "Angela Davis", "Malcolm X", "Marcus Garvey", "Stokely Carmichael",
-      "Eldridge Cleaver", "Assata Shakur", "Patrice Lumumba", "Kwame Nkrumah",
-      "Thomas Sankara", "Nelson Mandela", "Steve Biko", "Winnie Mandela",
-      "Anti-Apartheid", "Black Power Movement", "Black Lives Matter", "Spike Lee"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Black Panther Party",
+      "Fred Hampton",
+      "Angela Davis",
+      "Nelson Mandela",
+      "Marcus Garvey"
     ]
   },
-
   "Music, Arts & Culture": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["Music", "Musical", "Biography", "Documentary", "Drama"],
-    keywords: [
-      "harlem-renaissance", "motown", "jazz", "hip-hop", "rhythm-and-blues",
-      "soul-music", "gospel-music", "blues-music", "african-american-music",
-      "african-american-culture", "apollo-theater", "reggae"
+    withGenres: "10402|99|18", // Music, Documentary, Drama
+    primaryKeywords: [
+      "harlem renaissance",
+      "motown",
+      "african american music",
+      "african american culture",
+      "hip hop",
+      "jazz",
+      "soul music",
+      "gospel music",
+      "blues"
     ],
-    searchTerms: [
-      "Harlem Renaissance", "Summer of Soul", "Motown", "Apollo Theater",
-      "Soul Train", "Nina Simone", "Billie Holiday", "Aretha Franklin",
-      "Ray Charles", "James Brown", "Sam Cooke", "Marvin Gaye", "Stevie Wonder",
-      "Prince", "Michael Jackson", "Whitney Houston", "Tina Turner",
-      "Miles Davis", "John Coltrane", "Louis Armstrong", "Duke Ellington",
-      "Charlie Parker", "Bessie Smith", "Ma Rainey", "Muddy Waters", "B.B. King",
-      "Chuck Berry", "Little Richard", "Jimi Hendrix", "Tupac Shakur",
-      "Notorious B.I.G.", "Straight Outta Compton", "Bob Marley", "Fela Kuti",
-      "August Wilson", "James Baldwin", "Toni Morrison", "Langston Hughes", "Basquiat"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Harlem Renaissance",
+      "Motown",
+      "Nina Simone",
+      "Aretha Franklin",
+      "Summer of Soul"
     ]
   },
-
   "Sports Legends": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["Sport", "Biography", "Documentary", "Drama"],
-    keywords: [
-      "african-american-athlete", "boxing", "baseball", "basketball",
-      "american-football", "track-and-field", "olympics", "negro-leagues",
-      "racial-integration", "sports-history"
+    withGenres: "",
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "negro leagues",
+      "racial integration"
     ],
-    searchTerms: [
-      "Muhammad Ali", "Jackie Robinson", "Negro Leagues", "Satchel Paige",
-      "Hank Aaron", "Willie Mays", "Jesse Owens", "Jack Johnson boxer",
-      "Joe Louis", "Sugar Ray Robinson", "George Foreman", "Mike Tyson",
-      "Joe Frazier", "Bill Russell", "Kareem Abdul-Jabbar", "Wilt Chamberlain",
-      "Magic Johnson", "Michael Jordan", "Kobe Bryant", "LeBron James",
-      "Allen Iverson", "Arthur Ashe", "Venus Serena Williams", "King Richard",
-      "Jim Brown", "Ernie Davis", "Remember the Titans", "Glory Road", "Coach Carter",
-      "Hoop Dreams", "Wilma Rudolph", "Althea Gibson", "Usain Bolt"
+    secondaryKeywords: [
+      "boxing",
+      "baseball",
+      "basketball",
+      "american football",
+      "track and field",
+      "olympics",
+      "sports"
+    ],
+    fallbackQueries: [
+      "Jackie Robinson",
+      "Muhammad Ali",
+      "Negro Leagues",
+      "Jesse Owens",
+      "Arthur Ashe"
     ]
   },
-
   "Social Justice & Modern Era": {
-    imdbTypes: ["movie", "tvMovie"],
-    genres: ["Drama", "Crime", "History", "Documentary"],
-    keywords: [
-      "racial-injustice", "wrongful-conviction", "mass-incarceration",
-      "police-brutality", "racial-profiling", "social-justice", "prison-system",
-      "african-american-family", "inner-city", "systemic-racism"
+    withGenres: "18|80|99", // Drama, Crime, Documentary
+    primaryKeywords: [
+      "racial injustice",
+      "wrongful conviction",
+      "mass incarceration",
+      "police brutality",
+      "racial profiling",
+      "systemic racism",
+      "black lives matter"
     ],
-    searchTerms: [
-      "13th documentary", "Just Mercy", "Fruitvale Station", "The Hate U Give",
-      "Central Park Five", "Kalief Browder", "Trayvon Martin", "George Floyd",
-      "Breonna Taylor", "Oscar Grant", "Rodney King", "LA 92", "Ferguson documentary",
-      "Innocence Project", "Bryan Stevenson", "Mass Incarceration", "Ava DuVernay",
-      "Ryan Coogler", "Barry Jenkins", "If Beale Street Could Talk", "Nickel Boys",
-      "Origin Ava DuVernay", "Hurricane Katrina New Orleans", "Detroit 1967"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Just Mercy",
+      "Central Park Five",
+      "Fruitvale Station",
+      "Mass Incarceration",
+      "Innocence Project"
+    ]
+  },
+  "Business": {
+    withGenres: "",
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "african american culture",
+      "african american protagonist",
+      "harlem"
+    ],
+    secondaryKeywords: [
+      "business",
+      "entrepreneur",
+      "startup",
+      "entrepreneurship",
+      "wall street",
+      "banker",
+      "mogul",
+      "record label",
+      "corporate",
+      "ceo",
+      "fashion industry"
+    ],
+    fallbackQueries: [
+      "Black Wall Street",
+      "Boss The Black Experience in Business",
+      "Black business",
+      "Black entrepreneurs",
+      "Madam C.J. Walker",
+      "The Banker",
+      "Dolemite Is My Name",
+      "She Did That"
     ]
   }
 };
 
-const SERIES_CATEGORY_RULES = {
+const SERIES_CATEGORY_CONFIG = {
   "Docuseries": {
-    imdbTypes: ["tvSeries", "tvMiniSeries"],
-    genres: ["Documentary", "History"],
-    keywords: [
-      "african-american-history", "civil-rights-movement", "black-history",
-      "racial-injustice", "african-american-culture", "hip-hop", "sports-documentary"
+    withGenres: "99", // Documentary
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "civil rights",
+      "hip hop",
+      "slavery",
+      "african american culture"
     ],
-    searchTerms: [
-      "Eyes on the Prize", "Henry Louis Gates", "The 1619 Project", "High on the Hog",
-      "African Americans Many Rivers to Cross", "Amend The Fight for America",
-      "Reconstruction America After the Civil War", "Making Black America",
-      "The Black Church PBS", "Gospel Henry Louis Gates", "Who Killed Malcolm X",
-      "O.J. Made in America", "The Last Dance", "They Call Me Magic", "Bill Russell Legend",
-      "Time The Kalief Browder Story", "Rest in Power Trayvon Martin", "When the Levees Broke",
-      "Hip-Hop Evolution", "Fight the Power Hip Hop", "Wu-Tang Of Mics and Men",
-      "Unsung TV series", "Finding Your Roots", "Muhammad Ali Ken Burns", "Jazz Ken Burns"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Eyes on the Prize",
+      "Henry Louis Gates",
+      "1619 Project",
+      "High on the Hog"
     ]
   },
-
   "Historical Dramas": {
-    imdbTypes: ["tvSeries", "tvMiniSeries"],
-    genres: ["Drama", "History"],
-    keywords: [
-      "african-american-history", "slavery", "underground-railroad",
-      "civil-rights-movement", "harlem", "racial-segregation", "black-history"
+    withGenres: "18", // Drama
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "slavery",
+      "underground railroad",
+      "civil rights movement",
+      "harlem"
     ],
-    searchTerms: [
-      "Roots", "The Underground Railroad", "Underground TV series", "The Book of Negroes",
-      "The Good Lord Bird", "Women of the Movement", "When They See Us", "Small Axe",
-      "Self Made Madam C.J. Walker", "Lovecraft Country", "Watchmen", "Godfather of Harlem",
-      "Snowfall", "Pose", "Queen Sugar", "Alex Haley Queen", "The Women of Brewster Place",
-      "Treme", "The Wire", "The Corner", "Shaka Zulu", "Black Earth Rising"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Roots",
+      "Underground Railroad",
+      "Godfather of Harlem",
+      "Small Axe",
+      "When They See Us"
     ]
   },
-
   "Civil Rights & Movements": {
-    imdbTypes: ["tvSeries", "tvMiniSeries"],
-    genres: ["History", "Drama", "Documentary", "Biography"],
-    keywords: [
-      "civil-rights-movement", "african-american-history", "racial-injustice",
-      "black-power", "activism", "civil-rights"
+    withGenres: "",
+    primaryKeywords: [
+      "civil rights movement",
+      "civil rights",
+      "racial injustice",
+      "black power",
+      "african american history"
     ],
-    searchTerms: [
-      "Eyes on the Prize", "When They See Us", "Women of the Movement", "Small Axe",
-      "Genius MLK X", "Colin in Black & White", "Amend The Fight for America",
-      "The 1619 Project", "Who Killed Malcolm X", "Kalief Browder", "Trayvon Martin",
-      "Reconstruction PBS", "Black America Since MLK", "Godfather of Harlem",
-      "The Good Lord Bird", "Underground Railroad", "Roots", "Dear White People",
-      "A Different World", "Good Times", "The Boondocks"
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Women of the Movement",
+      "Amend Fight for America",
+      "Eyes on the Prize"
     ]
   },
-
   "Biographical": {
-    imdbTypes: ["tvSeries", "tvMiniSeries"],
-    genres: ["Biography", "Drama", "Documentary"],
-    keywords: [
-      "african-american", "biographical", "african-american-musician",
-      "african-american-athlete", "black-history"
+    withGenres: "18|99", // Drama OR Documentary
+    primaryKeywords: ["african american", "black history"],
+    secondaryKeywords: [
+      "biography",
+      "entrepreneur",
+      "musician",
+      "athlete",
+      "based on true story"
     ],
-    searchTerms: [
-      "Madam C.J. Walker", "Genius Aretha", "Genius MLK", "Women of the Movement",
-      "When They See Us", "Colin in Black & White", "Wu-Tang An American Saga",
-      "The New Edition Story", "The Bobby Brown Story", "The Jacksons An American Dream",
-      "The Temptations miniseries", "Unsung", "Muhammad Ali PBS", "The Last Dance",
-      "They Call Me Magic", "Bill Russell", "O.J. Made in America", "Mike Tyson series",
-      "BMF", "Godfather of Harlem", "Roots", "Everybody Hates Chris", "Bernie Mac"
+    fallbackQueries: [
+      "Self Made Madam C.J. Walker",
+      "Wu-Tang An American Saga",
+      "The Last Dance",
+      "Genius Aretha"
+    ]
+  },
+  "Comedies": {
+    withGenres: "35", // Comedy
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Atlanta",
+      "Insecure",
+      "Abbott Elementary",
+      "Martin",
+      "Living Single",
+      "The Fresh Prince of Bel-Air",
+      "Black-ish",
+      "Everybody Hates Chris"
+    ]
+  },
+  "Drama": {
+    withGenres: "18", // Drama
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Snowfall",
+      "The Chi",
+      "Queen Sugar",
+      "Power",
+      "Insecure",
+      "Pose",
+      "Bel-Air",
+      "Greenleaf"
+    ]
+  },
+  "Horror": {
+    withGenres: "",
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [
+      "horror",
+      "supernatural",
+      "vampire",
+      "zombie",
+      "haunted",
+      "monster",
+      "occult",
+      "slasher"
+    ],
+    fallbackQueries: [
+      "Lovecraft Country",
+      "Them",
+      "Swarm",
+      "From",
+      "The Changeling",
+      "Interview with the Vampire"
+    ]
+  },
+  "Action": {
+    withGenres: "10759", // Action & Adventure
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Luke Cage",
+      "Black Lightning",
+      "The Equalizer",
+      "Wu Assassins",
+      "Cross",
+      "Supacell"
+    ]
+  },
+  "Romance": {
+    withGenres: "",
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [
+      "romance",
+      "love",
+      "relationship",
+      "romantic",
+      "dating",
+      "marriage"
+    ],
+    fallbackQueries: [
+      "Insecure",
+      "Love Life",
+      "Harlem",
+      "Run the World",
+      "The Game",
+      "Girlfriends",
+      "Forever"
+    ]
+  },
+  "Holiday": {
+    withGenres: "",
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [
+      "christmas",
+      "holiday",
+      "thanksgiving",
+      "kwanzaa",
+      "new year"
+    ],
+    fallbackQueries: [
+      "The Best Man The Final Chapters",
+      "Merry Liddle Christmas",
+      "Black Christmas",
+      "Holiday"
+    ]
+  },
+  "Western": {
+    withGenres: "37", // Western
+    primaryKeywords: [
+      "african american",
+      "black history",
+      "slavery",
+      "civil war",
+      "reconstruction era",
+      "african american protagonist"
+    ],
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Lawmen Bass Reeves",
+      "The Good Lord Bird",
+      "Django",
+      "Deadwood"
+    ]
+  },
+  "Adventure": {
+    withGenres: "10759", // Action & Adventure
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [
+      "adventure",
+      "quest",
+      "journey",
+      "survival",
+      "exploration"
+    ],
+    fallbackQueries: [
+      "The Underground Railroad",
+      "Supacell",
+      "Outer Banks",
+      "Lupin",
+      "Raising Dion"
+    ]
+  },
+  "Sci fi": {
+    withGenres: "10765", // Sci-Fi & Fantasy
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "Watchmen",
+      "Lovecraft Country",
+      "Raising Dion",
+      "Supacell",
+      "The Changeling",
+      "Kindred",
+      "Intergalactic"
+    ]
+  },
+  "Stand-up comedy": {
+    withGenres: "35", // Comedy
+    primaryKeywords: [
+      "stand-up comedy",
+      "stand-up comedian",
+      "comedy special"
+    ],
+    secondaryKeywords: [
+      "african american",
+      "black history",
+      "african american culture",
+      "harlem"
+    ],
+    fallbackQueries: [
+      "Dave Chappelle",
+      "Kevin Hart",
+      "Katt Williams",
+      "Chris Rock",
+      "Def Comedy Jam",
+      "Wanda Sykes",
+      "Eddie Murphy"
+    ]
+  },
+  "Crime": {
+    withGenres: "80", // Crime
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [],
+    fallbackQueries: [
+      "The Wire",
+      "Snowfall",
+      "Power",
+      "Godfather of Harlem",
+      "BMF",
+      "Top Boy",
+      "Cross",
+      "Lupin"
+    ]
+  },
+  "Sports": {
+    withGenres: "",
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [
+      "sports",
+      "basketball",
+      "american football",
+      "boxing",
+      "baseball",
+      "track and field",
+      "athlete"
+    ],
+    fallbackQueries: [
+      "All American",
+      "The Last Dance",
+      "Swagger",
+      "Winning Time",
+      "Last Chance U",
+      "Receiver",
+      "They Call Me Magic"
+    ]
+  },
+  "Music": {
+    withGenres: "",
+    primaryKeywords: BLACK_PRIMARY_KEYWORDS,
+    secondaryKeywords: [
+      "music",
+      "hip hop",
+      "rap",
+      "jazz",
+      "soul music",
+      "rhythm and blues",
+      "gospel music",
+      "record label",
+      "musician"
+    ],
+    fallbackQueries: [
+      "Empire",
+      "Atlanta",
+      "Wu-Tang An American Saga",
+      "Hip-Hop Evolution",
+      "Unsung",
+      "Rhythm + Flow",
+      "The Get Down"
     ]
   }
 };
 
-const MOVIE_GENRES = Object.keys(MOVIE_CATEGORY_RULES);
-const SERIES_GENRES = Object.keys(SERIES_CATEGORY_RULES);
+const MOVIE_GENRES = Object.keys(MOVIE_CATEGORY_CONFIG);
+const SERIES_GENRES = Object.keys(SERIES_CATEGORY_CONFIG);
 
 // --- 2. ADDON MANIFEST ---
 const manifest = {
   id: "community.blackhistory.cinema",
-  version: "3.0.0", // Bumped to 3.0.0 to force Stremio to reload dynamic catalogs
+  version: "4.1.0",
   name: "Black History Cinema & Docs",
-  description: "Dynamically updated Black History movies, series, and documentaries pulled live from IMDb.",
-  resources: ["catalog", "stream"],
+  description:
+    "Dynamic Black History movies, documentaries, business stories, and TV shows powered by TMDB.",
+  resources: ["catalog"], // Returns standard tt... IMDb IDs so Stremio matches installed stream add-ons natively
   types: ["movie", "series"],
   catalogs: [
     {
@@ -265,448 +573,245 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// --- 3. TIME-BOUND CACHE (AUTO-REFRESHES EVERY 6 HOURS FOR NEW RELEASES) ---
+// --- 3. CACHES & DIAGNOSTIC STATS ---
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
-const categoryCache = new Map();
-const PAGE_SIZE = 100;
+const keywordIdCache = new Map();
+const externalIdCache = new Map();
+const pageCache = new Map();
+const stats = {
+  startedAt: new Date().toISOString(),
+  tmdbKeyConfigured: Boolean(TMDB_API_KEY),
+  requestsServed: 0,
+  lastErrors: []
+};
 
-function getCached(key) {
-  const entry = categoryCache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
-    categoryCache.delete(key);
+function recordError(msg) {
+  stats.lastErrors.unshift({ time: new Date().toISOString(), message: msg });
+  if (stats.lastErrors.length > 15) stats.lastErrors.pop();
+}
+
+async function tmdbFetch(path, params = {}) {
+  if (!TMDB_API_KEY) {
+    recordError("TMDB_API_KEY environment variable is missing.");
     return null;
   }
-  return entry.data;
-}
-
-function setCached(key, data) {
-  categoryCache.set(key, { data, timestamp: Date.now() });
-}
-
-function optimizePosterUrl(url, imdbId) {
-  if (url && typeof url === "string") {
-    if (url.includes("m.media-amazon.com") && url.includes("._V1_")) {
-      return url.replace(/\._V1_.*\.jpg$/i, "._V1_QL75_UX500_.jpg");
-    }
-    return url;
-  }
-  return `https://images.metahub.space/poster/medium/${imdbId}/img`;
-}
-
-async function runWithConcurrency(items, concurrency, taskFn) {
-  const results = [];
-  let index = 0;
-  async function worker() {
-    while (index < items.length) {
-      const currentIdx = index++;
-      try {
-        results[currentIdx] = await taskFn(items[currentIdx]);
-      } catch (err) {
-        results[currentIdx] = [];
-      }
+  const url = new URL(`${TMDB_BASE}${path}`);
+  url.searchParams.set("api_key", TMDB_API_KEY);
+  url.searchParams.set("language", "en-US");
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") {
+      url.searchParams.set(k, String(v));
     }
   }
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
-  await Promise.all(workers);
-  return results.flat();
-}
-
-// --- 4. LIVE IMDB FETCHERS (GRAPHQL + ADVANCED SEARCH + SUGGESTION API) ---
-
-// Source A: IMDb Official GraphQL API (https://api.graphql.imdb.com/)
-async function fetchImdbGraphQLByKeyword(keyword, imdbTypes, genres, sortBy = "POPULARITY") {
-  const query = `
-    query DynamicCategorySearch(
-      $first: Int!
-      $types: [String!]
-      $genres: [String!]
-      $keywords: [String!]
-    ) {
-      advancedTitleSearch(
-        first: $first
-        sort: { sortBy: ${sortBy}, sortOrder: ASC }
-        constraints: {
-          titleTypeConstraint: { anyTitleTypeIds: $types }
-          genreConstraint: { anyGenreIds: $genres }
-          keywordConstraint: { anyKeywords: $keywords }
-          explicitContentConstraint: { explicitContentFilter: EXCLUDE_ADULT }
-        }
-      ) {
-        edges {
-          node {
-            title {
-              id
-              titleText { text }
-              releaseYear { year }
-              primaryImage { url }
-              plot { plotText { plainText } }
-            }
-          }
-        }
-      }
-    }
-  `;
 
   try {
-    const res = await fetch("https://api.graphql.imdb.com/", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "x-imdb-client-name": "imdb-web-next"
-      },
-      body: JSON.stringify({
-        query,
-        variables: {
-          first: 100,
-          types: imdbTypes,
-          genres: genres,
-          keywords: [keyword]
-        }
-      }),
-      signal: AbortSignal.timeout(6000)
-    });
+    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) {
+      recordError(`TMDB ${path} returned HTTP ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    recordError(`TMDB ${path} network error: ${err.message}`);
+    return null;
+  }
+}
 
-    if (!res.ok) return [];
-    const json = await res.json();
-    const edges = json?.data?.advancedTitleSearch?.edges || [];
-    const targetStremioType = imdbTypes.includes("tvSeries") ? "series" : "movie";
+// Dynamically resolves keyword text -> TMDB numeric keyword IDs
+async function resolveKeywordIds(phrases) {
+  const ids = new Set();
+  await Promise.all(
+    phrases.map(async (phrase) => {
+      const key = phrase.toLowerCase().trim();
+      if (keywordIdCache.has(key)) {
+        keywordIdCache.get(key).forEach((id) => ids.add(id));
+        return;
+      }
+      const data = await tmdbFetch("/search/keyword", { query: key });
+      const matched = (data?.results || [])
+        .filter((r) => r.name.toLowerCase() === key || r.name.toLowerCase().includes(key))
+        .slice(0, 2)
+        .map((r) => r.id);
 
-    const items = [];
-    for (const edge of edges) {
-      const t = edge?.node?.title;
-      if (!t || !t.id || !t.primaryImage?.url) continue;
+      keywordIdCache.set(key, matched);
+      matched.forEach((id) => ids.add(id));
+    })
+  );
+  return Array.from(ids);
+}
 
-      items.push({
-        id: t.id,
-        type: targetStremioType,
-        name: t.titleText?.text || "Untitled",
-        poster: optimizePosterUrl(t.primaryImage.url, t.id),
+// Resolves TMDB numeric ID -> IMDb "tt..." ID so Stremio matches streams & episodes
+async function resolveImdbId(tmdbType, tmdbId) {
+  const cacheKey = `${tmdbType}:${tmdbId}`;
+  if (externalIdCache.has(cacheKey)) return externalIdCache.get(cacheKey);
+
+  const data = await tmdbFetch(`/${tmdbType}/${tmdbId}/external_ids`);
+  const imdbId = data?.imdb_id && data.imdb_id.startsWith("tt") ? data.imdb_id : null;
+  externalIdCache.set(cacheKey, imdbId);
+  return imdbId;
+}
+
+// Converts raw TMDB items into Stremio Meta Previews with verified posters & IMDb IDs
+async function hydrateTmdbResults(rawItems, stremioType, genreLabel) {
+  const tmdbType = stremioType === "series" ? "tv" : "movie";
+  const validItems = rawItems.filter((item) => item && item.id && item.poster_path);
+
+  const metas = await Promise.all(
+    validItems.map(async (item) => {
+      const imdbId = await resolveImdbId(tmdbType, item.id);
+      if (!imdbId) return null;
+
+      const title = item.title || item.name || "Untitled";
+      const dateStr = item.release_date || item.first_air_date || "";
+      const year = dateStr ? dateStr.slice(0, 4) : "";
+
+      return {
+        id: imdbId,
+        type: stremioType,
+        name: title,
+        poster: `${TMDB_IMG_BASE}${item.poster_path}`,
         posterShape: "regular",
-        releaseInfo: t.releaseYear?.year ? String(t.releaseYear.year) : "",
-        description: t.plot?.plotText?.plainText || ""
-      });
-    }
-    return items;
-  } catch (e) {
-    return [];
+        releaseInfo: year,
+        description: item.overview || "",
+        genres: genreLabel ? [genreLabel] : []
+      };
+    })
+  );
+
+  const deduped = new Map();
+  for (const m of metas) {
+    if (m && !deduped.has(m.id)) deduped.set(m.id, m);
   }
+  return Array.from(deduped.values());
 }
 
-// Source B: IMDb Advanced Search Page (__NEXT_DATA__ JSON Extractor)
-async function fetchImdbAdvancedSearchWeb(keyword, imdbTypes, genres) {
-  const titleTypeParam = imdbTypes.includes("tvSeries")
-    ? "tv_series,tv_miniseries"
-    : "feature,tv_movie";
-  const genreParam = genres.map((g) => g.toLowerCase()).join(",");
-  const url = `https://www.imdb.com/search/title/?keywords=${encodeURIComponent(
-    keyword
-  )}&title_type=${titleTypeParam}&genres=${genreParam}&sort=moviemeter,asc&count=100`;
+// --- 4. ON-DEMAND PAGINATED DISCOVER ENGINE ---
+async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
+  const configMap = stremioType === "series" ? SERIES_CATEGORY_CONFIG : MOVIE_CATEGORY_CONFIG;
+  const tmdbType = stremioType === "series" ? "tv" : "movie";
+  const cacheKey = `${stremioType}:${genreName || "ALL"}:${skip}`;
 
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-      },
-      signal: AbortSignal.timeout(6000)
-    });
-    if (!res.ok) return [];
-    const html = await res.text();
-    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
-    if (!match || !match[1]) return [];
-
-    const nextData = JSON.parse(match[1]);
-    const listItems =
-      nextData?.props?.pageProps?.searchResults?.titleResults?.titleListItems || [];
-    const targetStremioType = imdbTypes.includes("tvSeries") ? "series" : "movie";
-
-    const items = [];
-    for (const item of listItems) {
-      const id = item.titleId;
-      const posterUrl = item.primaryImage?.url;
-      if (!id || !posterUrl) continue;
-
-      items.push({
-        id,
-        type: targetStremioType,
-        name: item.titleText || item.originalTitleText || "Untitled",
-        poster: optimizePosterUrl(posterUrl, id),
-        posterShape: "regular",
-        releaseInfo: item.releaseYear ? String(item.releaseYear) : "",
-        description: item.plot || ""
-      });
-    }
-    return items;
-  } catch (e) {
-    return [];
-  }
-}
-
-// Source C: IMDb Live Suggestion & Cinemeta Search Index
-async function fetchLiveSearchIndex(term, targetType) {
-  const results = [];
-  const slug = term
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .replace(/\s+/g, "_");
-
-  if (slug) {
-    try {
-      const res = await fetch(
-        `https://v3.sg.media-imdb.com/suggestion/${slug[0]}/${slug}.json`,
-        {
-          headers: { "User-Agent": "Mozilla/5.0" },
-          signal: AbortSignal.timeout(4500)
-        }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        for (const item of data?.d || []) {
-          if (!item.id || !item.id.startsWith("tt") || !item.i?.imageUrl) continue;
-          const qid = (item.qid || item.q || "").toLowerCase();
-          const isSeries = qid.includes("series") || qid === "tvminiseries";
-          const isSkip = qid.includes("episode") || qid.includes("game") || qid.includes("podcast");
-          if (isSkip) continue;
-          if (targetType === "series" && !isSeries) continue;
-          if (targetType === "movie" && isSeries) continue;
-
-          results.push({
-            id: item.id,
-            type: targetType,
-            name: item.l,
-            poster: optimizePosterUrl(item.i.imageUrl, item.id),
-            posterShape: "regular",
-            releaseInfo: item.yr || (item.y ? String(item.y) : ""),
-            description: item.s ? `Starring: ${item.s}` : ""
-          });
-        }
-      }
-    } catch (e) {}
+  const cached = pageCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.metas;
   }
 
-  try {
-    const cRes = await fetch(
-      `https://v3-cinemeta.strem.io/catalog/${targetType}/top/search=${encodeURIComponent(term)}.json`,
-      { signal: AbortSignal.timeout(4500) }
-    );
-    if (cRes.ok) {
-      const cData = await cRes.json();
-      for (const meta of (cData?.metas || []).slice(0, 12)) {
-        if (!meta.id || !meta.id.startsWith("tt") || !meta.poster) continue;
-        results.push({
-          id: meta.id,
-          type: targetType,
-          name: meta.name,
-          poster: meta.poster,
-          posterShape: "regular",
-          releaseInfo: meta.releaseInfo || "",
-          description: meta.description || ""
-        });
-      }
-    }
-  } catch (e) {}
+  const activeConfig =
+    genreName && configMap[genreName]
+      ? configMap[genreName]
+      : {
+          withGenres: "",
+          primaryKeywords: [
+            "african american",
+            "black history",
+            "civil rights movement",
+            "slavery",
+            "harlem renaissance",
+            "black panther party"
+          ],
+          secondaryKeywords: [],
+          fallbackQueries: ["Black History", "African American"]
+        };
 
-  return results;
-}
+  const primaryIds = await resolveKeywordIds(activeConfig.primaryKeywords);
+  const secondaryIds = activeConfig.secondaryKeywords.length
+    ? await resolveKeywordIds(activeConfig.secondaryKeywords)
+    : [];
 
-// --- 5. DYNAMIC CATEGORY BUILDER ---
-async function getDynamicCategoryItems(type, genre) {
-  const rulesMap = type === "movie" ? MOVIE_CATEGORY_RULES : SERIES_CATEGORY_RULES;
-
-  // If Dropdown 3 is "Default" (no genre selected), combine all dynamic categories
-  if (!genre || !rulesMap[genre]) {
-    const allKey = `${type}:ALL`;
-    const cachedAll = getCached(allKey);
-    if (cachedAll) return cachedAll;
-
-    const allGenres = Object.keys(rulesMap);
-    const lists = await Promise.all(allGenres.map((g) => getDynamicCategoryItems(type, g)));
-    const deduped = new Map();
-    for (const list of lists) {
-      for (const item of list) {
-        if (!deduped.has(item.id)) deduped.set(item.id, item);
-      }
-    }
-    const merged = Array.from(deduped.values());
-    setCached(allKey, merged);
-    return merged;
+  // Pipe (|) = OR within group; Comma (,) = AND across primary + secondary groups
+  let withKeywordsParam = "";
+  if (primaryIds.length && secondaryIds.length) {
+    withKeywordsParam = `${primaryIds.join("|")},${secondaryIds.join("|")}`;
+  } else if (primaryIds.length) {
+    withKeywordsParam = primaryIds.join("|");
   }
 
-  const cacheKey = `${type}:${genre}`;
-  const cached = getCached(cacheKey);
-  if (cached) return cached;
-
-  const { imdbTypes, genres, keywords, searchTerms } = rulesMap[genre];
-
-  // Build tasks that query IMDb's live GraphQL, Advanced Search, and Search Index
-  const graphqlPopTasks = keywords.map(
-    (kw) => () => fetchImdbGraphQLByKeyword(kw, imdbTypes, genres, "POPULARITY")
-  );
-  const graphqlNewTasks = keywords.slice(0, 5).map(
-    (kw) => () => fetchImdbGraphQLByKeyword(kw, imdbTypes, genres, "RELEASE_DATE")
-  );
-  const webSearchTasks = keywords.slice(0, 6).map(
-    (kw) => () => fetchImdbAdvancedSearchWeb(kw, imdbTypes, genres)
-  );
-  const liveIndexTasks = searchTerms.map(
-    (term) => () => fetchLiveSearchIndex(term, type)
-  );
-
-  const allTasks = [
-    ...graphqlPopTasks,
-    ...graphqlNewTasks,
-    ...webSearchTasks,
-    ...liveIndexTasks
+  // Map Stremio's skip (0, 100, 200...) directly to 5 consecutive TMDB pages (20 items/page = 100 items)
+  const startTmdbPage = Math.floor(skip / 20) + 1;
+  const pageNumbers = [
+    startTmdbPage,
+    startTmdbPage + 1,
+    startTmdbPage + 2,
+    startTmdbPage + 3,
+    startTmdbPage + 4
   ];
 
-  const fetchedLists = await runWithConcurrency(allTasks, 15, (task) => task());
+  const discoverResponses = await Promise.all(
+    pageNumbers.map((page) =>
+      tmdbFetch(`/discover/${tmdbType}`, {
+        sort_by: "popularity.desc",
+        include_adult: "false",
+        with_keywords: withKeywordsParam,
+        with_genres: activeConfig.withGenres,
+        page
+      })
+    )
+  );
 
-  const uniqueItems = new Map();
-  for (const item of fetchedLists) {
-    if (item && item.id && !uniqueItems.has(item.id)) {
-      uniqueItems.set(item.id, {
-        ...item,
-        genres: [genre]
-      });
-    }
+  let rawResults = discoverResponses.flatMap((res) => res?.results || []);
+
+  // Supplement page 1 with targeted title/topic queries for niche themes
+  if (skip === 0 && activeConfig.fallbackQueries?.length) {
+    const fallbackResponses = await Promise.all(
+      activeConfig.fallbackQueries.map((q) =>
+        tmdbFetch(`/search/${tmdbType}`, { query: q, include_adult: "false", page: 1 })
+      )
+    );
+    const fallbackItems = fallbackResponses.flatMap((res) => (res?.results || []).slice(0, 6));
+    rawResults = [...rawResults, ...fallbackItems];
   }
 
-  const finalCatalog = Array.from(uniqueItems.values());
-  console.log(`[IMDb Dynamic] ${type} -> "${genre}": pulled ${finalCatalog.length} live titles.`);
-  setCached(cacheKey, finalCatalog);
-  return finalCatalog;
+  const metas = await hydrateTmdbResults(rawResults, stremioType, genreName);
+  pageCache.set(cacheKey, { metas, timestamp: Date.now() });
+  return metas;
 }
 
-// --- 6. CATALOG HANDLER ---
+// --- 5. CATALOG HANDLER ---
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
   if (id !== "black_history_movies" && id !== "black_history_series") {
     return { metas: [] };
   }
 
-  const genre = extra && extra.genre ? extra.genre : null;
-  let items = await getDynamicCategoryItems(type, genre);
+  stats.requestsServed++;
+  const skip = parseInt(extra?.skip || 0, 10);
+  const genre = extra?.genre || null;
 
-  if (extra && extra.search) {
-    const q = extra.search.toLowerCase();
-    const filtered = items.filter((item) => item.name.toLowerCase().includes(q));
-    const liveSearch = await fetchLiveSearchIndex(extra.search, type);
-
-    const merged = new Map();
-    for (const item of [...filtered, ...liveSearch]) {
-      if (item && item.id && !merged.has(item.id)) {
-        merged.set(item.id, item);
-      }
-    }
-    items = Array.from(merged.values());
-  }
-
-  const skip = parseInt(extra && extra.skip ? extra.skip : 0, 10);
-  return {
-    metas: items.slice(skip, skip + PAGE_SIZE)
-  };
-});
-
-// --- 7. DYNAMIC TORRENT STREAM HANDLER ---
-function formatBytes(bytes) {
-  const num = Number(bytes);
-  if (!num || isNaN(num)) return "";
-  const gb = num / 1024 ** 3;
-  if (gb >= 1) return `${gb.toFixed(2)} GB`;
-  const mb = num / 1024 ** 2;
-  return `${mb.toFixed(0)} MB`;
-}
-
-builder.defineStreamHandler(async ({ type, id }) => {
-  const baseImdbId = id.split(":")[0];
-  const streams = [];
-
-  // 1. Torrentio Live Indexer
-  try {
-    const tRes = await fetch(`https://torrentio.strem.fun/stream/${type}/${id}.json`, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(4500)
+  if (extra?.search) {
+    const tmdbType = type === "series" ? "tv" : "movie";
+    const page = Math.floor(skip / 20) + 1;
+    const searchRes = await tmdbFetch(`/search/${tmdbType}`, {
+      query: extra.search,
+      include_adult: "false",
+      page
     });
-    if (tRes.ok) {
-      const tData = await tRes.json();
-      if (Array.isArray(tData?.streams)) {
-        streams.push(...tData.streams);
-      }
-    }
-  } catch (e) {}
-
-  // 2. YTS Movie API
-  if (type === "movie") {
-    try {
-      const ytsRes = await fetch(
-        `https://yts.mx/api/v2/list_movies.json?query_term=${baseImdbId}`,
-        { signal: AbortSignal.timeout(4000) }
-      );
-      if (ytsRes.ok) {
-        const ytsData = await ytsRes.json();
-        for (const m of ytsData?.data?.movies || []) {
-          for (const t of m.torrents || []) {
-            if (t.hash) {
-              streams.push({
-                name: `Black History [${t.quality}]`,
-                title: `${m.title_long} (${t.type.toUpperCase()})\n💾 ${t.size} | 👤 ${t.seeds || 0} seeds`,
-                infoHash: t.hash.toLowerCase()
-              });
-            }
-          }
-        }
-      }
-    } catch (e) {}
+    const metas = await hydrateTmdbResults(searchRes?.results || [], type, genre);
+    return { metas };
   }
 
-  // 3. APiBay Indexer
-  if (streams.length < 5) {
-    try {
-      const tpRes = await fetch(`https://apibay.org/q.php?q=${baseImdbId}`, {
-        signal: AbortSignal.timeout(4000)
-      });
-      if (tpRes.ok) {
-        const tpData = await tpRes.json();
-        if (Array.isArray(tpData)) {
-          for (const item of tpData.slice(0, 15)) {
-            if (
-              item.info_hash &&
-              item.info_hash !== "0000000000000000000000000000000000000000"
-            ) {
-              streams.push({
-                name: "Black History [P2P]",
-                title: `${item.name}\n💾 ${formatBytes(item.size)} | 👤 ${item.seeders || 0} seeds`,
-                infoHash: item.info_hash.toLowerCase()
-              });
-            }
-          }
-        }
-      }
-    } catch (e) {}
-  }
-
-  return { streams };
+  const metas = await fetchDiscoverSlice(type, genre, skip);
+  return { metas: metas.slice(0, STREMIO_PAGE_SIZE) };
 });
 
-// --- 8. START SERVER & AUTO-REFRESH SCHEDULE ---
+// --- 6. EXPRESS SERVER & DIAGNOSTIC ROUTES ---
+const app = express();
 const PORT = process.env.PORT || 7000;
-serveHTTP(builder.getInterface(), { port: PORT, cacheMaxAge: 3600 });
-console.log(`Dynamic IMDb Addon active at port: ${PORT}`);
 
-async function refreshAllCategories() {
-  console.log("Fetching live Black History catalogs from IMDb...");
-  for (const genre of MOVIE_GENRES) {
-    await getDynamicCategoryItems("movie", genre);
-  }
-  for (const genre of SERIES_GENRES) {
-    await getDynamicCategoryItems("series", genre);
-  }
-  console.log("All dynamic IMDb catalogs populated!");
-}
+// Diagnostic endpoint: https://stremio-black-history.onrender.com/status
+app.get("/status", (req, res) => {
+  res.json({
+    status: "ok",
+    version: manifest.version,
+    movieCategories: MOVIE_GENRES,
+    seriesCategories: SERIES_GENRES,
+    cachedPages: pageCache.size,
+    resolvedKeywordsCount: keywordIdCache.size,
+    ...stats
+  });
+});
 
-// Initial warm-up on boot + scheduled refresh every 6 hours for new releases
-refreshAllCategories();
-setInterval(refreshAllCategories, CACHE_TTL_MS);
+// Mount Stremio Addon SDK router (/manifest.json, /catalog/..., CORS, landing page)
+app.use(getRouter(builder.getInterface()));
+
+app.listen(PORT, () => {
+  console.log(`Black History Stremio Addon v${manifest.version} running on port ${PORT}`);
+});
