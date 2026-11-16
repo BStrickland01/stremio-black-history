@@ -5,7 +5,7 @@ const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w500";
-const STREMIO_PAGE_SIZE = 40; // 2 TMDB pages (20 items each) per Stremio scroll request for fast genre switching
+const STREMIO_PAGE_SIZE = 40; // 2 TMDB pages (20 items each) per Stremio scroll request
 
 const BLACK_PRIMARY_KEYWORDS = [
   "african american",
@@ -546,8 +546,9 @@ const manifest = {
       type: "movie",
       id: "black_history_movies",
       name: "Black History",
+      genres: MOVIE_GENRES,
       extra: [
-        { name: "genre", options: MOVIE_GENRES, isRequired: false },
+        { name: "genre", options: MOVIE_GENRES, optionsLimit: 1, isRequired: false },
         { name: "search", isRequired: false },
         { name: "skip", isRequired: false }
       ]
@@ -556,8 +557,9 @@ const manifest = {
       type: "series",
       id: "black_history_series",
       name: "Black History",
+      genres: SERIES_GENRES,
       extra: [
-        { name: "genre", options: SERIES_GENRES, isRequired: false },
+        { name: "genre", options: SERIES_GENRES, optionsLimit: 1, isRequired: false },
         { name: "search", isRequired: false },
         { name: "skip", isRequired: false }
       ]
@@ -613,7 +615,6 @@ async function tmdbFetch(path, params = {}) {
   }
 }
 
-// Dynamically resolves keyword text -> TMDB numeric keyword IDs
 async function resolveKeywordIds(phrases) {
   const ids = new Set();
   await Promise.all(
@@ -636,7 +637,6 @@ async function resolveKeywordIds(phrases) {
   return Array.from(ids);
 }
 
-// Resolves TMDB numeric ID -> IMDb "tt..." ID so Stremio matches streams & episodes
 async function resolveImdbId(tmdbType, tmdbId) {
   const cacheKey = `${tmdbType}:${tmdbId}`;
   if (externalIdCache.has(cacheKey)) return externalIdCache.get(cacheKey);
@@ -647,7 +647,7 @@ async function resolveImdbId(tmdbType, tmdbId) {
   return imdbId;
 }
 
-// Batched hydration (15 requests at a time) to prevent TMDB rate-limiting & Stremio timeouts
+// Batched hydration (15 requests at a time) to prevent TMDB 429 rate-limits & Stremio timeouts
 async function hydrateTmdbResults(rawItems, stremioType, genreLabel) {
   const tmdbType = stremioType === "series" ? "tv" : "movie";
   const validItems = rawItems.filter((item) => item && item.id && item.poster_path);
@@ -727,7 +727,6 @@ async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
     withKeywordsParam = primaryIds.join("|");
   }
 
-  // Map Stremio's skip (0, 40, 80...) to 2 consecutive TMDB pages (20 items/page = 40 items)
   const startTmdbPage = Math.floor(skip / 20) + 1;
   const pageNumbers = [startTmdbPage, startTmdbPage + 1];
 
@@ -745,7 +744,6 @@ async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
 
   let rawResults = discoverResponses.flatMap((res) => res?.results || []);
 
-  // Supplement page 1 with targeted title/topic queries for niche themes
   if (skip === 0 && activeConfig.fallbackQueries?.length) {
     const fallbackResponses = await Promise.all(
       activeConfig.fallbackQueries.map((q) =>
@@ -772,11 +770,12 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
   stats.requestsServed++;
   stats.recentRequests.unshift({
     time: new Date().toISOString(),
+    handler: true,
     type,
     id,
     extra: extra || {}
   });
-  if (stats.recentRequests.length > 10) stats.recentRequests.pop();
+  if (stats.recentRequests.length > 15) stats.recentRequests.pop();
 
   const skip = parseInt(extra?.skip || 0, 10);
   const genre = extra?.genre || null;
@@ -811,6 +810,21 @@ app.get("/status", (req, res) => {
     resolvedKeywordsCount: keywordIdCache.size,
     ...stats
   });
+});
+
+// Log raw catalog URLs and normalize ?genre=... query params into Stremio's path format
+app.use("/catalog", (req, res, next) => {
+  stats.recentRequests.unshift({
+    time: new Date().toISOString(),
+    rawUrl: req.originalUrl
+  });
+  if (stats.recentRequests.length > 15) stats.recentRequests.pop();
+
+  if (req.query.genre && !req.url.includes("genre=")) {
+    const encodedGenre = encodeURIComponent(req.query.genre);
+    req.url = req.url.replace(/\.json(\?.*)?$/, `/genre=${encodedGenre}.json`);
+  }
+  next();
 });
 
 app.use(getRouter(builder.getInterface()));
