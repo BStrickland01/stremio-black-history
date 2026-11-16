@@ -5,7 +5,7 @@ const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w500";
-const STREMIO_PAGE_SIZE = 40; // 2 TMDB pages (20 items each) per Stremio scroll request
+const STREMIO_PAGE_SIZE = 40;
 
 const BLACK_PRIMARY_KEYWORDS = [
   "african american",
@@ -20,7 +20,7 @@ const BLACK_PRIMARY_KEYWORDS = [
 // --- 1. DYNAMIC CATEGORY DEFINITIONS (TMDB DISCOVER RULES) ---
 const MOVIE_CATEGORY_CONFIG = {
   "Documentaries": {
-    withGenres: "99", // Documentary
+    withGenres: "99",
     primaryKeywords: [
       "african american",
       "black history",
@@ -39,7 +39,7 @@ const MOVIE_CATEGORY_CONFIG = {
     ]
   },
   "Biopics & True Stories": {
-    withGenres: "36|18", // History OR Drama
+    withGenres: "36|18",
     primaryKeywords: [
       "african american",
       "black history",
@@ -120,7 +120,7 @@ const MOVIE_CATEGORY_CONFIG = {
     ]
   },
   "Music, Arts & Culture": {
-    withGenres: "10402|99|18", // Music, Documentary, Drama
+    withGenres: "10402|99|18",
     primaryKeywords: [
       "harlem renaissance",
       "motown",
@@ -167,7 +167,7 @@ const MOVIE_CATEGORY_CONFIG = {
     ]
   },
   "Social Justice & Modern Era": {
-    withGenres: "18|80|99", // Drama, Crime, Documentary
+    withGenres: "18|80|99",
     primaryKeywords: [
       "racial injustice",
       "wrongful conviction",
@@ -220,7 +220,7 @@ const MOVIE_CATEGORY_CONFIG = {
     ]
   },
   "Stand-up comedy": {
-    withGenres: "35", // Comedy (TMDB catalogs stand-up specials as Movies)
+    withGenres: "35",
     primaryKeywords: [
       "stand-up comedy",
       "stand-up comedian",
@@ -247,7 +247,7 @@ const MOVIE_CATEGORY_CONFIG = {
 
 const SERIES_CATEGORY_CONFIG = {
   "Docuseries": {
-    withGenres: "99", // Documentary
+    withGenres: "99",
     primaryKeywords: [
       "african american",
       "black history",
@@ -264,7 +264,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Historical Dramas": {
-    withGenres: "18", // Drama
+    withGenres: "18",
     primaryKeywords: [
       "african american",
       "black history",
@@ -298,7 +298,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Biographical": {
-    withGenres: "18|99", // Drama OR Documentary
+    withGenres: "18|99",
     primaryKeywords: ["african american", "black history"],
     secondaryKeywords: [
       "biography",
@@ -315,7 +315,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Comedies": {
-    withGenres: "35", // Comedy
+    withGenres: "35",
     primaryKeywords: BLACK_PRIMARY_KEYWORDS,
     secondaryKeywords: [],
     fallbackQueries: [
@@ -330,7 +330,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Drama": {
-    withGenres: "18", // Drama
+    withGenres: "18",
     primaryKeywords: BLACK_PRIMARY_KEYWORDS,
     secondaryKeywords: [],
     fallbackQueries: [
@@ -367,7 +367,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Action": {
-    withGenres: "10759", // Action & Adventure
+    withGenres: "10759",
     primaryKeywords: BLACK_PRIMARY_KEYWORDS,
     secondaryKeywords: [],
     fallbackQueries: [
@@ -418,7 +418,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Western": {
-    withGenres: "37", // Western
+    withGenres: "37",
     primaryKeywords: [
       "african american",
       "black history",
@@ -435,7 +435,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Adventure": {
-    withGenres: "10759", // Action & Adventure
+    withGenres: "10759",
     primaryKeywords: BLACK_PRIMARY_KEYWORDS,
     secondaryKeywords: [
       "adventure",
@@ -453,7 +453,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Sci fi": {
-    withGenres: "10765", // Sci-Fi & Fantasy
+    withGenres: "10765",
     primaryKeywords: BLACK_PRIMARY_KEYWORDS,
     secondaryKeywords: [],
     fallbackQueries: [
@@ -467,7 +467,7 @@ const SERIES_CATEGORY_CONFIG = {
     ]
   },
   "Crime": {
-    withGenres: "80", // Crime
+    withGenres: "80",
     primaryKeywords: BLACK_PRIMARY_KEYWORDS,
     secondaryKeywords: [],
     fallbackQueries: [
@@ -569,7 +569,7 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 // --- 3. CACHES & DIAGNOSTIC STATS ---
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const keywordIdCache = new Map();
 const externalIdCache = new Map();
 const pageCache = new Map();
@@ -646,4 +646,230 @@ async function resolveImdbId(tmdbType, tmdbId) {
 }
 
 async function hydrateTmdbResults(rawItems, stremioType, genreLabel) {
-  const tmdbType = stremioType === "series" ? "tv" :
+  const tmdbType = stremioType === "series" ? "tv" : "movie";
+  const validItems = rawItems.filter((item) => item && item.id && item.poster_path);
+  const metas = [];
+  const BATCH_SIZE = 15;
+
+  for (let i = 0; i < validItems.length; i += BATCH_SIZE) {
+    const batch = validItems.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        const imdbId = await resolveImdbId(tmdbType, item.id);
+        if (!imdbId) return null;
+
+        const title = item.title || item.name || "Untitled";
+        const dateStr = item.release_date || item.first_air_date || "";
+        const year = dateStr ? dateStr.slice(0, 4) : "";
+
+        return {
+          id: imdbId,
+          type: stremioType,
+          name: title,
+          poster: `${TMDB_IMG_BASE}${item.poster_path}`,
+          posterShape: "regular",
+          releaseInfo: year,
+          description: item.overview || "",
+          genres: genreLabel ? [genreLabel] : []
+        };
+      })
+    );
+    metas.push(...batchResults);
+  }
+
+  const deduped = new Map();
+  for (const m of metas) {
+    if (m && !deduped.has(m.id)) deduped.set(m.id, m);
+  }
+  return Array.from(deduped.values());
+}
+
+// --- 4. ON-DEMAND PAGINATED DISCOVER ENGINE ---
+async function fetchDiscoverSlice(stremioType, genreName, skip = 0) {
+  const configMap = stremioType === "series" ? SERIES_CATEGORY_CONFIG : MOVIE_CATEGORY_CONFIG;
+  const tmdbType = stremioType === "series" ? "tv" : "movie";
+  const cacheKey = `${stremioType}:${genreName || "ALL"}:${skip}`;
+
+  const cached = pageCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.metas;
+  }
+
+  const activeConfig =
+    genreName && configMap[genreName]
+      ? configMap[genreName]
+      : {
+          withGenres: "",
+          primaryKeywords: [
+            "african american",
+            "black history",
+            "civil rights movement",
+            "harlem renaissance",
+            "black panther party",
+            "african american culture"
+          ],
+          secondaryKeywords: [],
+          fallbackQueries: ["Black History", "African American"]
+        };
+
+  const primaryIds = await resolveKeywordIds(activeConfig.primaryKeywords);
+  const secondaryIds = activeConfig.secondaryKeywords.length
+    ? await resolveKeywordIds(activeConfig.secondaryKeywords)
+    : [];
+
+  let withKeywordsParam = "";
+  if (primaryIds.length && secondaryIds.length) {
+    withKeywordsParam = `${primaryIds.join("|")},${secondaryIds.join("|")}`;
+  } else if (primaryIds.length) {
+    withKeywordsParam = primaryIds.join("|");
+  }
+
+  const startTmdbPage = Math.floor(skip / 20) + 1;
+  const pageNumbers = [startTmdbPage, startTmdbPage + 1];
+
+  const discoverResponses = await Promise.all(
+    pageNumbers.map((page) =>
+      tmdbFetch(`/discover/${tmdbType}`, {
+        sort_by: "popularity.desc",
+        include_adult: "false",
+        with_keywords: withKeywordsParam,
+        with_genres: activeConfig.withGenres,
+        page
+      })
+    )
+  );
+
+  let rawResults = discoverResponses.flatMap((res) => res?.results || []);
+
+  if (skip === 0 && activeConfig.fallbackQueries?.length) {
+    const fallbackResponses = await Promise.all(
+      activeConfig.fallbackQueries.map((q) =>
+        tmdbFetch(`/search/${tmdbType}`, { query: q, include_adult: "false", page: 1 })
+      )
+    );
+    const fallbackItems = fallbackResponses.flatMap((res) => (res?.results || []).slice(0, 5));
+    rawResults = [...rawResults, ...fallbackItems];
+  }
+
+  const metas = await hydrateTmdbResults(rawResults, stremioType, genreName);
+  if (metas.length > 0) {
+    pageCache.set(cacheKey, { metas, timestamp: Date.now() });
+  }
+  return metas;
+}
+
+async function resolveCatalogRequest({ type, id, extra }) {
+  if (id !== "black_history_movies" && id !== "black_history_series") {
+    return { metas: [] };
+  }
+
+  const skip = parseInt(extra?.skip || 0, 10);
+  const genre = extra?.genre && extra.genre !== "None" ? extra.genre : null;
+
+  if (extra?.search) {
+    const tmdbType = type === "series" ? "tv" : "movie";
+    const page = Math.floor(skip / 20) + 1;
+    const searchRes = await tmdbFetch(`/search/${tmdbType}`, {
+      query: extra.search,
+      include_adult: "false",
+      page
+    });
+    const metas = await hydrateTmdbResults(searchRes?.results || [], type, genre);
+    return { metas };
+  }
+
+  const metas = await fetchDiscoverSlice(type, genre, skip);
+  return { metas: metas.slice(0, STREMIO_PAGE_SIZE) };
+}
+
+// --- 5. SDK CATALOG HANDLER ---
+builder.defineCatalogHandler(async (args) => resolveCatalogRequest(args));
+
+// --- 6. EXPRESS SERVER & DIRECT PROTOCOL ROUTES ---
+const app = express();
+const PORT = process.env.PORT || 7000;
+
+function parseExtraSegment(rawSegment) {
+  const extra = {};
+  if (!rawSegment) return extra;
+  const decoded = decodeURIComponent(rawSegment);
+  for (const pair of decoded.split("&")) {
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx > 0) {
+      const key = decodeURIComponent(pair.slice(0, eqIdx).replace(/\+/g, " "));
+      const val = decodeURIComponent(pair.slice(eqIdx + 1).replace(/\+/g, " "));
+      extra[key] = val;
+    }
+  }
+  return extra;
+}
+
+app.get("/status", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    status: "ok",
+    version: manifest.version,
+    movieCategories: MOVIE_GENRES,
+    seriesCategories: SERIES_GENRES,
+    cachedPages: pageCache.size,
+    resolvedKeywordsCount: keywordIdCache.size,
+    ...stats
+  });
+});
+
+app.get("/manifest.json", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.json(manifest);
+});
+
+app.get(["/catalog/:type/:id.json", "/catalog/:type/:id/:extra.json"], async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+
+  const { type, id } = req.params;
+  const extra = parseExtraSegment(req.params.extra);
+  if (req.query.genre && !extra.genre) extra.genre = String(req.query.genre);
+  if (req.query.search && !extra.search) extra.search = String(req.query.search);
+  if (req.query.skip && !extra.skip) extra.skip = String(req.query.skip);
+
+  const result = await resolveCatalogRequest({ type, id, extra });
+
+  stats.requestsServed++;
+  stats.recentRequests.unshift({
+    time: new Date().toISOString(),
+    rawUrl: req.originalUrl,
+    parsedType: type,
+    parsedGenre: extra.genre || null,
+    count: result.metas.length,
+    firstTitle: result.metas[0]?.name || null
+  });
+  if (stats.recentRequests.length > 20) stats.recentRequests.pop();
+
+  res.json(result);
+});
+
+app.use(getRouter(builder.getInterface()));
+
+async function warmInitialPages() {
+  if (!TMDB_API_KEY) return;
+  const tasks = [
+    ["movie", null],
+    ["series", null],
+    ...MOVIE_GENRES.map((g) => ["movie", g]),
+    ...SERIES_GENRES.map((g) => ["series", g])
+  ];
+  for (const [type, genre] of tasks) {
+    try {
+      await fetchDiscoverSlice(type, genre, 0);
+      await new Promise((r) => setTimeout(r, 400));
+    } catch (_) {
+      // Ignore individual warm-up errors; on-demand requests will retry
+    }
+  }
+}
+
+app.listen(PORT, () => {
+  console.log(`Black History Stremio Addon v${manifest.version} running on port ${PORT}`);
+  setTimeout(warmInitialPages, 2000);
+});
