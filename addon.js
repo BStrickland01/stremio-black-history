@@ -539,7 +539,7 @@ const SERIES_GENRES = Object.keys(SERIES_CATEGORY_CONFIG);
 
 // --- 2. ADDON MANIFEST ---
 const manifest = {
-  id: "community.blackhistory.cinema",
+  id: "community.blackhistory.cinema.v4",
   version: "4.1.0",
   name: "Black History Cinema & Docs",
   description:
